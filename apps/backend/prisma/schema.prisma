@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum PlanType {
+  FREE
+  PRO
+  TEAM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+  INCOMPLETE
+}
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  INDEXED
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  stripeCustomerId String?
+  plan        PlanType @default(FREE)
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships TenantMembership[]
+  users       User[]
+  threads     AiThread[]
+  documents   Document[]
+  subscriptions Subscription[]
+  usageLogs   UsageLog[]
+  
+  @@index([slug])
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String
+  firstName     String?
+  lastName      String?
+  avatarUrl     String?
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  memberships   TenantMembership[]
+  refreshTokens RefreshToken[]
+  threads       AiThread[]
+  messages      AiMessage[]
+  usageLogs     UsageLog[]
+
+  @@index([email])
+  @@index([tenantId])
+}
+
+model TenantMembership {
+  id        String   @id @default(uuid())
+  role      Role     @default(MEMBER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+}
+
+model Plan {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  type        PlanType  @unique
+  monthlyPrice Int      @default(0)
+  yearlyPrice  Int      @default(0)
+  monthlyRequests Int   @default(0)
+  monthlyTokens    Int   @default(0)
+  maxDocuments     Int   @default(0)
+  maxFileSize      Int   @default(5242880) // 5MB default
+  maxMembers       Int   @default(1)
+  features         Json  @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  tenantId             String
+  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planId               String
+  plan                 Plan               @relation(fields: [planId], references: [id])
+
+  @@index([tenantId])
+  @@index([stripeCustomerId])
+}
+
+model AiThread {
+  id          String   @id @default(uuid())
+  title       String
+  model       String   @default("gpt-4-turbo-preview")
+  systemPrompt String?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  messages    AiMessage[]
+
+  @@index([tenantId])
+  @@index([userId])
+}
+
+model AiMessage {
+  id           String   @id @default(uuid())
+  role         String   // "user" | "assistant" | "system"
+  content      String
+  model        String
+  tokenUsage   Int      @default(0)
+  toolCalls    Json?
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  threadId     String
+  thread       AiThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@index([userId])
+}
+
+model Document {
+  id          String         @id @default(uuid())
+  filename    String
+  originalName String
+  mimeType    String
+  size        Int
+  storageKey  String
+  status      DocumentStatus @default(UPLOADED)
+  error       String?
+  metadata    Json           @default("{}")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenantId    String
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+
+  chunks      DocumentChunk[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model DocumentChunk {
+  id        String   @id @default(uuid())
+  content   String
+  sequence  Int
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+model UsageLog {
+  id          String   @id @default(uuid())
+  type        String   // "chat" | "embedding" | "document"
+  count       Int      @default(1)
+  tokens      Int      @default(0)
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model BackgroundJob {
+  id          String   @id @default(uuid())
+  name        String
+  data        Json     @default("{}")
+  status      String   @default("PENDING")
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(3)
+  result      Json?
+  error       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+}
